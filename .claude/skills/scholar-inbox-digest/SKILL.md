@@ -154,6 +154,18 @@ Default selections (no override needed for most papers):
   itself is an arch/overview figure, only one is shown.
 - **Score badge color**: ≥0.85 = green (high), 0.70–0.85 = amber (mid),
   <0.70 = grey (low).
+- **Title link**: goes to `https://www.scholar-inbox.com/paper/{paper_id}`
+  (not arXiv / not the conference PDF) so the user can like / dislike on
+  Scholar Inbox if needed. The conference PDF / arXiv links live in the
+  link row at the bottom.
+- **Like / dislike buttons**: every paper gets 👍 / 👎 buttons below the
+  score badge. Clicking calls `POST https://api.scholar-inbox.com/api/make_rating/`
+  with `{rating: 1|-1|0, id: <paper_id>}` and `credentials: "include"`.
+  This works *only when the reader is signed in to scholar-inbox.com in the
+  same browser* (the API server allows `null` origin so `file://` is OK,
+  but the session cookie must be present). On failure a toast appears.
+  Initial button state comes from `p.rating` (-1 / 0 / 1) captured at
+  fetch time.
 
 Per-paper overrides (set on the paper dict in `digest.json` before render):
 - `picked_figure_idxs: [int, int]` — explicit indices into `figures`.

@@ -9,18 +9,22 @@
     p.score_text        e.g. "0.96"
     p.method_shortname  str | None
     p.title             str
-    p.url               str
+    p.scholar_inbox_url str    (title links here so user can like/dislike)
+    p.source_url        str    (CVPR / arXiv abs page)
+    p.pdf_url, p.github_url, p.project_url, p.arxiv_id
+    p.paper_id          str    (used as data-paper-id for rating buttons)
+    p.rating            -1 | 0 | 1   (initial state for buttons)
     p.authors           str
     p.venue             str
     p.struct_en         [{label, bullets:[html]}, ...] | None
     p.struct_ja         [{label, bullets:[html]}, ...] | None
     p.abstract_short    str | None       (fallback when no struct)
     p.figures           [{url, caption}, ...]   (0, 1, or 2 entries: teaser + arch)
-    p.pdf_url, p.github_url, p.project_url, p.arxiv_id
 
   Section order: title → byline → figure(s) → EN summary → JA summary → links.
-  (Figures intentionally precede the summary so the reader can scan visually
-   first.)
+  Like / dislike buttons live in the title row next to the score badge; they
+  call the Scholar Inbox `make_rating` API from the browser (requires the
+  reader to be logged into scholar-inbox.com in the same browser).
 #}
 <!doctype html>
 <html lang="en">
@@ -41,6 +45,8 @@
     --score-mid-fg:  #8a5300;
     --score-low-bg:  #ececec;
     --score-low-fg:  #555;
+    --like-on:   #14693e;
+    --dislike-on:#a62828;
   }
   * { box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -49,11 +55,14 @@
   header.page { margin-bottom: 28px; }
   header.page h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
   header.page .meta { color: var(--muted); font-size: 13px; }
+  header.page .note { color: var(--muted); font-size: 12px; margin-top: 6px;
+                      padding: 6px 10px; background: #f6f6f6; border-radius: 4px;
+                      display: inline-block; }
 
   article.paper { border-top: 1px solid var(--soft); padding: 24px 0 30px; }
   article.paper:first-of-type { border-top: none; padding-top: 8px; }
 
-  /* Title row: title block on the left, score badge on the right. */
+  /* Title row: title block on the left, score badge + rate buttons on the right. */
   .paper-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
   .title-wrap { flex: 1; min-width: 0; }
   .rank { display: inline-block; min-width: 26px; color: var(--muted); font-size: 13px;
@@ -64,8 +73,10 @@
   .shortname { color: #b34800; font-weight: 700; margin-right: 6px; }
   .byline { color: var(--muted); font-size: 13px; margin: 0 0 0 26px; }
 
-  /* Big visible score badge. */
-  .score-badge { flex: 0 0 auto; min-width: 56px; text-align: center;
+  /* Right column: score badge stacked above the rate buttons. */
+  .head-actions { display: flex; flex-direction: column; align-items: stretch;
+                  gap: 6px; flex: 0 0 auto; }
+  .score-badge { min-width: 64px; text-align: center;
                  font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums;
                  padding: 6px 12px; border-radius: 6px; line-height: 1.1;
                  letter-spacing: -0.01em; }
@@ -75,6 +86,19 @@
   .score-high { background: var(--score-high-bg); color: var(--score-high-fg); }
   .score-mid  { background: var(--score-mid-bg);  color: var(--score-mid-fg); }
   .score-low  { background: var(--score-low-bg);  color: var(--score-low-fg); }
+
+  .rate-buttons { display: flex; gap: 4px; justify-content: center; }
+  .rate-btn { flex: 1; cursor: pointer; border: 1px solid var(--soft); background: #fff;
+              color: var(--muted); padding: 4px 0; border-radius: 4px;
+              font-size: 16px; line-height: 1; transition: background 0.1s, color 0.1s; }
+  .rate-btn:hover { background: #f4f4f4; }
+  .rate-btn:active { transform: translateY(1px); }
+  .paper[data-rating="1"]  .rate-btn-like    { background: var(--score-high-bg);
+                                                color: var(--like-on); border-color: var(--like-on); }
+  .paper[data-rating="-1"] .rate-btn-dislike { background: #f6dada;
+                                                color: var(--dislike-on); border-color: var(--dislike-on); }
+  .rate-btn.busy { opacity: 0.5; pointer-events: none; }
+  .rate-btn.err  { border-color: var(--dislike-on); color: var(--dislike-on); }
 
   .body { margin-left: 26px; }
 
@@ -109,6 +133,13 @@
   .links { font-size: 13px; margin-top: 8px; }
   .links a { color: var(--link); text-decoration: none; margin-right: 14px; }
   .links a:hover { text-decoration: underline; }
+
+  /* Toast for like/dislike feedback errors. */
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+           background: #2a2a2a; color: #fff; padding: 10px 16px; border-radius: 4px;
+           font-size: 13px; opacity: 0; pointer-events: none;
+           transition: opacity 0.2s; z-index: 1000; max-width: 80%; }
+  #toast.show { opacity: 1; }
 </style>
 </head>
 <body>
@@ -119,27 +150,40 @@
     {% if user %}for {{ user }} · {% endif %}
     {{ papers|length }} papers
   </div>
+  <div class="note">
+    Click 👍 / 👎 to rate. Requires being logged in to
+    <a href="https://www.scholar-inbox.com" target="_blank">scholar-inbox.com</a>
+    in this browser.
+  </div>
 </header>
 
 {% for p in papers %}
-<article class="paper">
+<article class="paper" data-paper-id="{{ p.paper_id }}" data-rating="{{ p.rating }}">
   <div class="paper-head">
     <div class="title-wrap">
       <h2 class="title">
         <span class="rank">{{ p.rank }}.</span>
         {% if p.method_shortname %}<span class="shortname">{{ p.method_shortname }}:</span>{% endif %}
-        {% if p.url %}<a href="{{ p.url }}">{{ p.title }}</a>{% else %}{{ p.title }}{% endif %}
+        {% if p.scholar_inbox_url %}<a href="{{ p.scholar_inbox_url }}">{{ p.title }}</a>{% else %}{{ p.title }}{% endif %}
       </h2>
       <div class="byline">
         {{ p.authors }}{% if p.venue %} · {{ p.venue }}{% endif %}
       </div>
     </div>
-    {% if p.score is not none %}
-    <div class="score-badge {{ p.score_class }}">
-      {{ p.score_text }}
-      <span class="score-label">match</span>
+    <div class="head-actions">
+      {% if p.score is not none %}
+      <div class="score-badge {{ p.score_class }}">
+        {{ p.score_text }}
+        <span class="score-label">match</span>
+      </div>
+      {% endif %}
+      {% if p.paper_id %}
+      <div class="rate-buttons">
+        <button class="rate-btn rate-btn-like"    type="button" title="Like">👍</button>
+        <button class="rate-btn rate-btn-dislike" type="button" title="Dislike">👎</button>
+      </div>
+      {% endif %}
     </div>
-    {% endif %}
   </div>
 
   <div class="body">
@@ -181,8 +225,9 @@
     {% endif %}
 
     <div class="links">
-      {% if p.url %}<a href="{{ p.url }}">paper</a>{% endif %}
-      {% if p.pdf_url and p.pdf_url != p.url %}<a href="{{ p.pdf_url }}">pdf</a>{% endif %}
+      {% if p.scholar_inbox_url %}<a href="{{ p.scholar_inbox_url }}">scholar-inbox</a>{% endif %}
+      {% if p.source_url %}<a href="{{ p.source_url }}">paper</a>{% endif %}
+      {% if p.pdf_url and p.pdf_url != p.source_url %}<a href="{{ p.pdf_url }}">pdf</a>{% endif %}
       {% if p.github_url %}<a href="{{ p.github_url }}">code</a>{% endif %}
       {% if p.project_url %}<a href="{{ p.project_url }}">project</a>{% endif %}
       {% if p.arxiv_id %}<a href="https://arxiv.org/abs/{{ p.arxiv_id }}">arXiv</a>{% endif %}
@@ -190,5 +235,57 @@
   </div>
 </article>
 {% endfor %}
+
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+// Like / dislike via Scholar Inbox's /api/make_rating/ endpoint.
+// Works only when the reader is signed in to scholar-inbox.com in this
+// browser (the request is sent with credentials so the session cookie on
+// .scholar-inbox.com is included; the API server allows the null origin
+// of file:// pages).
+const RATE_URL = "https://api.scholar-inbox.com/api/make_rating/";
+
+const toast = document.getElementById("toast");
+function flash(msg, ms=3500) {
+  toast.textContent = msg;
+  toast.classList.add("show");
+  clearTimeout(flash._t);
+  flash._t = setTimeout(() => toast.classList.remove("show"), ms);
+}
+
+async function setRating(article, btn, newRating) {
+  const pid = article.dataset.paperId;
+  const prev = article.dataset.rating;
+  btn.classList.add("busy");
+  try {
+    const r = await fetch(RATE_URL, {
+      method: "POST",
+      credentials: "include",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify({rating: newRating, id: String(pid)}),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    article.dataset.rating = String(newRating);
+  } catch (e) {
+    btn.classList.add("err");
+    setTimeout(() => btn.classList.remove("err"), 1500);
+    flash("Rating failed (" + e.message + "). Make sure you are signed in to scholar-inbox.com in this browser.");
+    article.dataset.rating = prev;  // revert
+  } finally {
+    btn.classList.remove("busy");
+  }
+}
+
+document.querySelectorAll(".rate-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const article = btn.closest(".paper");
+    const cur = parseInt(article.dataset.rating || "0", 10);
+    const target = btn.classList.contains("rate-btn-like") ? 1 : -1;
+    const newRating = (cur === target) ? 0 : target;
+    setRating(article, btn, newRating);
+  });
+});
+</script>
 </body>
 </html>

@@ -17,8 +17,11 @@ Output JSON shape:
           "authors": str, "abstract": str,
           "venue": str, "year": str,
           "paper_id": str, "arxiv_id": str | null,
-          "url": str, "pdf_url": str | null,
+          "scholar_inbox_url": str,         # https://www.scholar-inbox.com/paper/{paper_id}
+          "source_url": str | null,         # conference / arXiv abs URL
+          "pdf_url": str | null,
           "github_url": str | null, "project_url": str | null,
+          "rating": -1 | 0 | 1,             # current user rating
           "summaries": {                  # 4-axis markdown bullets, untouched
             "contributions": str | null,
             "method":        str | null,
@@ -196,11 +199,27 @@ def _score(raw: dict[str, Any]) -> float | None:
         return None
 
 
+def _rating(raw: dict[str, Any]) -> int:
+    """Current user rating: 1 (liked), -1 (disliked), 0 (none).
+
+    Scholar Inbox exposes either explicit `liked`/`disliked` booleans or a
+    `rating` integer field; coerce all of them into {-1, 0, 1}."""
+    if raw.get("liked"):
+        return 1
+    if raw.get("disliked"):
+        return -1
+    r = raw.get("rating")
+    if r in (1, -1):
+        return r
+    return 0
+
+
 def normalize(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for i, p in enumerate(papers, start=1):
         title = str(p.get("title") or "").strip()
         kw = p.get("keywords_metadata") or {}
+        pid = str(p.get("paper_id") or "")
         out.append(
             {
                 "rank": i,
@@ -211,12 +230,14 @@ def normalize(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "abstract": (p.get("abstract") or "").strip(),
                 "venue": _venue(p),
                 "year": _year(p),
-                "paper_id": str(p.get("paper_id") or ""),
+                "paper_id": pid,
                 "arxiv_id": p.get("arxiv_id"),
-                "url": p.get("url") or (f"https://arxiv.org/abs/{p['arxiv_id']}" if p.get("arxiv_id") else ""),
+                "scholar_inbox_url": (f"{SI_BASE}/paper/{pid}" if pid else ""),
+                "source_url": p.get("url") or (f"https://arxiv.org/abs/{p['arxiv_id']}" if p.get("arxiv_id") else ""),
                 "pdf_url": _pdf_url(p),
                 "github_url": p.get("github_url"),
                 "project_url": p.get("project_url"),
+                "rating": _rating(p),
                 "summaries": _summaries(p),
                 "figures": _figures(p),
                 "first_page_image": _abs_url((p.get("first_page_image") or {}).get("imageUrl")),
