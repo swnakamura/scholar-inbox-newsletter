@@ -89,8 +89,18 @@ uv run python scripts/fetch_digest.py --top 15 --out digest.json --raw-out raw.j
 
 # render
 uv run python scripts/render_html.py digest.json --out newsletter.html
-open newsletter.html      # macOS
+
+# serve + open in browser; also proxies the like/dislike click to
+# Scholar Inbox so 👍 / 👎 actually persist on your account
+uv run python scripts/serve.py
 ```
+
+> ⚠️ Don't `open newsletter.html` directly — the 👍/👎 buttons will fail
+> silently because Scholar Inbox's session cookie is `SameSite=Lax`, so
+> the browser refuses to attach it to cross-origin requests from
+> `file://`. The local server at `http://127.0.0.1:8765/` proxies the
+> rating call server-side using the scholarinboxcli session, which has
+> no such restriction.
 
 If you're using Claude Code in this directory, just say **"今日のまとめを
 作って"**. The skill follows all three steps automatically.
@@ -119,6 +129,9 @@ scripts/
   fetch_digest.py    scholarinboxcli digest --json → normalized digest.json
                      (calls ensure_auth() first to handle login)
   render_html.py     digest.json → newsletter.html (loads template above)
+  serve.py           serves newsletter.html at localhost:8765 and proxies
+                     the like/dislike click to api.scholar-inbox.com using
+                     the scholarinboxcli session
 pyproject.toml       uv project, deps: scholarinboxcli, jinja2
 .gitignore           excludes raw.json / digest.json / newsletter.html / .env
 ```

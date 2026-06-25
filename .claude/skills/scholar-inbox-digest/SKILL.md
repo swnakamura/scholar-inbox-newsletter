@@ -15,8 +15,14 @@ model's job. The fetch step auto-handles authentication.
    re-logs in using the saved magic link with no user prompt.
 2. Read `digest.json`. For each paper, write `summary_struct` and
    `summary_struct_ja` per the schema below.
-3. `uv run python scripts/render_html.py digest.json --out newsletter.html
-   && open newsletter.html`.
+3. `uv run python scripts/render_html.py digest.json --out newsletter.html`,
+   then `uv run python scripts/serve.py` — this serves the HTML at
+   `http://127.0.0.1:8765/` *and* proxies the like/dislike clicks back to
+   Scholar Inbox using the scholarinboxcli session. The browser opens
+   automatically. **Do not** use `open newsletter.html` (file://); the
+   rating buttons silently fail there because the session cookie is
+   SameSite=Lax and the browser refuses to send it cross-origin from
+   file://.
 
 When the user says "今日のまとめを作って" / "today's digest" / similar, just
 do all three steps without asking; treat that as the GO signal.
@@ -159,13 +165,13 @@ Default selections (no override needed for most papers):
   Scholar Inbox if needed. The conference PDF / arXiv links live in the
   link row at the bottom.
 - **Like / dislike buttons**: every paper gets 👍 / 👎 buttons below the
-  score badge. Clicking calls `POST https://api.scholar-inbox.com/api/make_rating/`
-  with `{rating: 1|-1|0, id: <paper_id>}` and `credentials: "include"`.
-  This works *only when the reader is signed in to scholar-inbox.com in the
-  same browser* (the API server allows `null` origin so `file://` is OK,
-  but the session cookie must be present). On failure a toast appears.
-  Initial button state comes from `p.rating` (-1 / 0 / 1) captured at
-  fetch time.
+  score badge. The browser POSTs to the local `/api/rate` endpoint, which
+  `scripts/serve.py` forwards to `https://api.scholar-inbox.com/api/make_rating/`
+  with the scholarinboxcli session cookie. The rating actually persists on
+  Scholar Inbox. Toggle behavior: clicking the already-active button
+  un-rates the paper (rating → 0). On failure a toast surfaces the error;
+  the button state reverts. Initial state comes from `p.rating` (-1 / 0 /
+  1) captured at fetch time.
 
 Per-paper overrides (set on the paper dict in `digest.json` before render):
 - `picked_figure_idxs: [int, int]` — explicit indices into `figures`.

@@ -151,9 +151,10 @@
     {{ papers|length }} papers
   </div>
   <div class="note">
-    Click 👍 / 👎 to rate. Requires being logged in to
-    <a href="https://www.scholar-inbox.com" target="_blank">scholar-inbox.com</a>
-    in this browser.
+    Click 👍 / 👎 to rate. Requires the local server
+    (<code>uv run python scripts/serve.py</code>) — opening this file
+    directly via <code>file://</code> will fail because the browser blocks
+    the cookie on cross-origin requests.
   </div>
 </header>
 
@@ -239,15 +240,15 @@
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script>
-// Like / dislike via Scholar Inbox's /api/make_rating/ endpoint.
-// Works only when the reader is signed in to scholar-inbox.com in this
-// browser (the request is sent with credentials so the session cookie on
-// .scholar-inbox.com is included; the API server allows the null origin
-// of file:// pages).
-const RATE_URL = "https://api.scholar-inbox.com/api/make_rating/";
+// Like / dislike via the local proxy server (scripts/serve.py), which
+// holds the scholarinboxcli session cookie. We can't call
+// api.scholar-inbox.com directly from file:// because the session cookie
+// is SameSite=Lax and the browser refuses to attach it to cross-origin
+// requests; the local proxy avoids that constraint entirely.
+const RATE_URL = "/api/rate";
 
 const toast = document.getElementById("toast");
-function flash(msg, ms=3500) {
+function flash(msg, ms=4500) {
   toast.textContent = msg;
   toast.classList.add("show");
   clearTimeout(flash._t);
@@ -259,18 +260,21 @@ async function setRating(article, btn, newRating) {
   const prev = article.dataset.rating;
   btn.classList.add("busy");
   try {
+    if (location.protocol === "file:") {
+      throw new Error("opened as file:// — start the local server with 'uv run python scripts/serve.py'");
+    }
     const r = await fetch(RATE_URL, {
       method: "POST",
-      credentials: "include",
       headers: {"content-type": "application/json"},
       body: JSON.stringify({rating: newRating, id: String(pid)}),
     });
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok || !out.ok) throw new Error(out.error || ("HTTP " + r.status));
     article.dataset.rating = String(newRating);
   } catch (e) {
     btn.classList.add("err");
     setTimeout(() => btn.classList.remove("err"), 1500);
-    flash("Rating failed (" + e.message + "). Make sure you are signed in to scholar-inbox.com in this browser.");
+    flash("Rating failed: " + e.message);
     article.dataset.rating = prev;  // revert
   } finally {
     btn.classList.remove("busy");
