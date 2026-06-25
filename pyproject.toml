@@ -1,0 +1,9 @@
+[project]
+name = "scholar-inbox-newsletter"
+version = "0.1.0"
+description = "Render the day's Scholar Inbox digest as a self-contained HTML newsletter with figures and structured EN/JA summaries."
+requires-python = ">=3.13"
+dependencies = [
+    "jinja2>=3.1.6",
+    "scholarinboxcli>=0.1.3",
+]

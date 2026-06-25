@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+
+# Personal data — NEVER commit these:
+# - raw.json / digest.json contain the user's name, paper-read history, etc.
+# - newsletter.html embeds that data into the rendered output.
+# - scholarinboxcli stores its sha_key cookie in ~/.config/scholarinboxcli/
+#   (outside this repo); never copy that file into the repo.
+raw.json
+digest.json
+newsletter.html
+*.tmp.json
+.env
+.env.*
+secrets/
+config/local.*
