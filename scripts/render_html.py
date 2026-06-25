@@ -1,14 +1,17 @@
-"""Render digest.json (the rich Scholar Inbox output) to a self-contained HTML.
+"""Render digest.json to a self-contained HTML newsletter.
 
-Per-paper structure (filled in by the model between fetch and render):
-  - summary_struct, summary_struct_ja: {what, why, how, results, thoughts}
-    where each section is a list[str] of plain-string bullets (flexible count;
-    empty list / missing key means "skip this section"). Markdown **bold** and
-    *italic* inside bullets are converted.
-  - picked_figure_idx (optional): override default figure pick.
+The HTML/CSS layout lives in `templates/newsletter.html.j2`. Edit it there if
+you want to change styling; this script only prepares per-paper data.
 
-Picked figure default: lowest-numbered item with type=="Figure" (Tables skipped),
-falling back to first_page_image when there are no Figure entries.
+Per-paper fields it consumes (filled in by step 2 of the pipeline):
+  - summary_struct,    summary_struct_ja: {what, why, how, results, thoughts}
+    where each section is list[str].
+  - picked_figure_idxs: list[int] (optional) to override figure selection.
+
+Defaults:
+  - Figure pick: teaser = lowest-numbered type=="Figure"; arch = next
+    type=="Figure" whose caption matches architecture/pipeline keywords.
+  - Score badge color: high ≥ 0.85, mid ≥ 0.70, else low.
 
 Usage:
     uv run python scripts/render_html.py digest.json [--out newsletter.html]
@@ -22,11 +25,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from jinja2 import Environment, BaseLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-BULLET_RE = re.compile(r"^\s*[-*]\s+(.+)$")
 BOLD_RE = re.compile(r"\*\*([^*]+)\*\*")
 ITAL_RE = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+ARCH_RE = re.compile(
+    r"\b(architecture|pipeline|framework|overview|network)\b",
+    re.I,
+)
 
 SECTION_ORDER = ("what", "why", "how", "results", "thoughts")
 SECTION_LABELS = {
@@ -37,6 +43,9 @@ SECTION_LABELS = {
     "thoughts": "Thoughts",
 }
 
+TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
+TEMPLATE_NAME = "newsletter.html.j2"
+
 
 def _md_inline(text: str) -> str:
     t = html.escape(text)
@@ -46,8 +55,6 @@ def _md_inline(text: str) -> str:
 
 
 def _struct_sections(paper: dict[str, Any], key: str) -> list[dict[str, Any]] | None:
-    """Return [{key, label, bullets:[html,...]}, ...] for non-empty sections,
-    or None if no struct exists."""
     struct = paper.get(key)
     if not isinstance(struct, dict):
         return None
@@ -58,7 +65,7 @@ def _struct_sections(paper: dict[str, Any], key: str) -> list[dict[str, Any]] | 
             continue
         bullets = [_md_inline(s) for s in items if isinstance(s, str) and s.strip()]
         if bullets:
-            out.append({"key": sk, "label": SECTION_LABELS[sk], "bullets": bullets})
+            out.append({"label": SECTION_LABELS[sk], "bullets": bullets})
     return out or None
 
 
@@ -70,152 +77,48 @@ def _abstract_fallback(paper: dict[str, Any]) -> str | None:
     return html.escape(short)
 
 
-def _pick_figure(paper: dict[str, Any]) -> dict[str, Any] | None:
+def _pick_figures(paper: dict[str, Any]) -> list[dict[str, Any]]:
     figs = paper.get("figures") or []
     if not figs:
         if paper.get("first_page_image"):
-            return {
+            return [{
                 "url": paper["first_page_image"],
                 "caption": "First page preview.",
                 "type": "Page",
                 "n": None,
-            }
-        return None
-    idx = paper.get("picked_figure_idx")
-    if isinstance(idx, int) and 0 <= idx < len(figs):
-        return figs[idx]
-    figures_only = [f for f in figs if (f.get("type") or "Figure") == "Figure"]
-    if figures_only:
-        figures_only.sort(key=lambda f: (f.get("n") if f.get("n") is not None else 999))
-        return figures_only[0]
-    return figs[0]
+            }]
+        return []
+
+    override = paper.get("picked_figure_idxs")
+    if isinstance(override, list) and override:
+        return [figs[i] for i in override if isinstance(i, int) and 0 <= i < len(figs)]
+
+    figures_only = sorted(
+        [f for f in figs if (f.get("type") or "Figure") == "Figure"],
+        key=lambda f: f.get("n") if f.get("n") is not None else 999,
+    )
+    if not figures_only:
+        return [figs[0]]
+
+    teaser = figures_only[0]
+    picks = [teaser]
+    teaser_is_arch = bool(ARCH_RE.search(teaser.get("caption") or ""))
+    if not teaser_is_arch:
+        for f in figures_only[1:]:
+            if ARCH_RE.search(f.get("caption") or ""):
+                picks.append(f)
+                break
+    return picks
 
 
-TEMPLATE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Scholar Inbox digest — {{ date or "today" }}</title>
-<style>
-  :root { --fg: #1a1a1a; --muted: #6a6a6a; --soft: #e6e6e6; --link: #0a55c4;
-          --section: #7a4a00; --section-ja: #4a4a4a; }
-  * { box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-         max-width: 820px; margin: 32px auto; padding: 0 18px; color: var(--fg);
-         line-height: 1.55; -webkit-font-smoothing: antialiased; }
-  header { margin-bottom: 28px; }
-  header h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
-  header .meta { color: var(--muted); font-size: 13px; }
-  article.paper { border-top: 1px solid var(--soft); padding: 24px 0 28px; }
-  article.paper:first-of-type { border-top: none; padding-top: 8px; }
-  .rank { display: inline-block; min-width: 26px; color: var(--muted); font-size: 13px;
-          font-variant-numeric: tabular-nums; }
-  .title { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
-  .title a { color: var(--fg); text-decoration: none; }
-  .title a:hover { text-decoration: underline; }
-  .shortname { color: #b34800; font-weight: 700; margin-right: 6px; }
-  .score { color: var(--muted); font-size: 12px; margin-left: 6px;
-           font-variant-numeric: tabular-nums; }
-  .byline { color: var(--muted); font-size: 13px; margin: 0 0 12px 26px; }
-  .body { margin-left: 26px; }
-
-  .struct { font-size: 14px; margin: 6px 0 8px; }
-  .struct .sec { margin: 6px 0; padding: 0; }
-  .struct .sec-h { font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
-                   text-transform: uppercase; color: var(--section);
-                   margin: 0 0 2px; }
-  .struct ul { margin: 2px 0 6px; padding-left: 20px; }
-  .struct li { margin: 2px 0; }
-
-  .struct-ja { font-size: 13.5px; margin: 4px 0 10px; color: #2a2a2a;
-               border-left: 2px solid #d9d9d9; padding: 4px 0 4px 12px; }
-  .struct-ja .sec { margin: 4px 0; }
-  .struct-ja .sec-h { font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
-                      color: var(--section-ja); margin: 0 0 2px; }
-  .struct-ja ul { margin: 2px 0 4px; padding-left: 18px; }
-  .struct-ja li { margin: 2px 0; }
-
-  .abstract-fallback { font-size: 13px; color: #555; margin: 6px 0 10px; }
-
-  figure { margin: 12px 0 8px; }
-  figure img { max-width: 100%; height: auto; border: 1px solid var(--soft);
-               border-radius: 4px; display: block; }
-  figcaption { color: var(--muted); font-size: 12px; margin-top: 6px; line-height: 1.4; }
-  .links { font-size: 13px; margin-top: 8px; }
-  .links a { color: var(--link); text-decoration: none; margin-right: 14px; }
-  .links a:hover { text-decoration: underline; }
-  .nofig { color: #a0a0a0; font-size: 12px; font-style: italic; }
-</style>
-</head>
-<body>
-<header>
-  <h1>Scholar Inbox digest</h1>
-  <div class="meta">
-    {% if date %}{{ date }} · {% endif %}
-    {% if user %}for {{ user }} · {% endif %}
-    {{ papers|length }} papers
-  </div>
-</header>
-
-{% for p in papers %}
-<article class="paper">
-  <h2 class="title">
-    <span class="rank">{{ p.rank }}.</span>
-    {% if p.method_shortname %}<span class="shortname">{{ p.method_shortname }}:</span>{% endif %}
-    {% if p.url %}<a href="{{ p.url }}">{{ p.title }}</a>{% else %}{{ p.title }}{% endif %}
-    {% if p.score is not none %}<span class="score">{{ "%.2f"|format(p.score) }}</span>{% endif %}
-  </h2>
-  <div class="byline">
-    {{ p.authors }}{% if p.venue %} · {{ p.venue }}{% endif %}
-  </div>
-
-  <div class="body">
-    {% if p.struct_en %}
-    <div class="struct">
-      {% for s in p.struct_en %}
-      <div class="sec">
-        <div class="sec-h">{{ s.label }}</div>
-        <ul>{% for b in s.bullets %}<li>{{ b|safe }}</li>{% endfor %}</ul>
-      </div>
-      {% endfor %}
-    </div>
-    {% elif p.abstract_short %}
-    <p class="abstract-fallback">{{ p.abstract_short }}</p>
-    {% endif %}
-
-    {% if p.struct_ja %}
-    <div class="struct-ja">
-      {% for s in p.struct_ja %}
-      <div class="sec">
-        <div class="sec-h">{{ s.label }}</div>
-        <ul>{% for b in s.bullets %}<li>{{ b|safe }}</li>{% endfor %}</ul>
-      </div>
-      {% endfor %}
-    </div>
-    {% endif %}
-
-    {% if p.figure %}
-    <figure>
-      <img src="{{ p.figure.url }}" alt="{{ p.figure.caption[:80] }}">
-      {% if p.figure.caption %}<figcaption>{{ p.figure.caption }}</figcaption>{% endif %}
-    </figure>
-    {% else %}
-    <div class="nofig">(no figure available)</div>
-    {% endif %}
-
-    <div class="links">
-      {% if p.url %}<a href="{{ p.url }}">paper</a>{% endif %}
-      {% if p.pdf_url and p.pdf_url != p.url %}<a href="{{ p.pdf_url }}">pdf</a>{% endif %}
-      {% if p.github_url %}<a href="{{ p.github_url }}">code</a>{% endif %}
-      {% if p.project_url %}<a href="{{ p.project_url }}">project</a>{% endif %}
-      {% if p.arxiv_id %}<a href="https://arxiv.org/abs/{{ p.arxiv_id }}">arXiv</a>{% endif %}
-    </div>
-  </div>
-</article>
-{% endfor %}
-</body>
-</html>
-"""
+def _score_view(score: float | None) -> tuple[str, str]:
+    if score is None:
+        return ("", "")
+    if score >= 0.85:
+        return ("score-high", f"{score:.2f}")
+    if score >= 0.70:
+        return ("score-mid",  f"{score:.2f}")
+    return ("score-low", f"{score:.2f}")
 
 
 def _prepare(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -223,12 +126,15 @@ def _prepare(papers: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for p in papers:
         struct_en = _struct_sections(p, "summary_struct")
         struct_ja = _struct_sections(p, "summary_struct_ja")
+        score_class, score_text = _score_view(p.get("score"))
         out.append({
             **p,
             "struct_en": struct_en,
             "struct_ja": struct_ja,
             "abstract_short": None if struct_en else _abstract_fallback(p),
-            "figure": _pick_figure(p),
+            "figures": _pick_figures(p),
+            "score_class": score_class,
+            "score_text": score_text,
         })
     return out
 
@@ -237,13 +143,20 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("digest", help="Path to digest.json")
     ap.add_argument("--out", default="newsletter.html")
+    ap.add_argument("--template-dir", default=str(TEMPLATE_DIR),
+                    help="Directory containing newsletter.html.j2")
     args = ap.parse_args()
 
     data = json.loads(Path(args.digest).read_text())
     papers = _prepare(data.get("papers", []))
 
-    env = Environment(loader=BaseLoader(), autoescape=select_autoescape(["html", "xml"]))
-    tmpl = env.from_string(TEMPLATE)
+    env = Environment(
+        loader=FileSystemLoader(args.template_dir),
+        autoescape=select_autoescape(["html", "xml"]),
+        trim_blocks=False,
+        lstrip_blocks=False,
+    )
+    tmpl = env.get_template(TEMPLATE_NAME)
     out_html = tmpl.render(date=data.get("date"), user=data.get("user"), papers=papers)
     Path(args.out).write_text(out_html)
     print(f"wrote {args.out} ({len(papers)} papers)")

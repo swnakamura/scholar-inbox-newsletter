@@ -39,14 +39,80 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
 SI_BASE = "https://www.scholar-inbox.com"
+AUTH_FILE = Path.home() / ".config" / "scholar-inbox-newsletter" / "magic_link"
+AUTH_ENV = "SCHOLAR_INBOX_AUTH_URL"
+
+
+def _auth_status() -> bool:
+    res = subprocess.run(
+        ["scholarinboxcli", "auth", "status"], capture_output=True, text=True
+    )
+    if res.returncode != 0:
+        return False
+    try:
+        return bool(json.loads(res.stdout).get("is_logged_in"))
+    except Exception:
+        return False
+
+
+def _try_login(url: str, source: str) -> bool:
+    sys.stderr.write(f"auth: not logged in, trying magic link from {source}\n")
+    r = subprocess.run(
+        ["scholarinboxcli", "auth", "login", "--url", url],
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        sys.stderr.write(f"auth: login OK ({source})\n")
+        return True
+    sys.stderr.write(f"auth: login failed from {source}: {r.stderr.strip()}\n")
+    return False
+
+
+def ensure_auth() -> None:
+    """Make sure scholarinboxcli is authenticated. If not, try the saved magic
+    link; if that's missing too, print clear setup instructions and exit."""
+    if _auth_status():
+        return
+
+    env_url = os.environ.get(AUTH_ENV, "").strip()
+    if env_url and _try_login(env_url, f"${AUTH_ENV}"):
+        return
+
+    if AUTH_FILE.exists():
+        url = AUTH_FILE.read_text().strip()
+        if url and _try_login(url, str(AUTH_FILE)):
+            return
+        sys.stderr.write(
+            f"auth: {AUTH_FILE} exists but its magic link did not work — "
+            f"probably expired. Refresh it from a recent Scholar Inbox email.\n"
+        )
+
+    sys.stderr.write(textwrap.dedent(f"""
+        ┌──────────────────────────────────────────────────────────────────┐
+        │  Scholar Inbox is not authenticated.                             │
+        └──────────────────────────────────────────────────────────────────┘
+        To set up once:
+          1. Open a Scholar Inbox digest email.
+          2. Copy the magic-link URL — looks like:
+             https://www.scholar-inbox.com/login?sha_key=...&date=...
+          3. Save it (single line, no quotes) to:
+             {AUTH_FILE}
+          (or export {AUTH_ENV}=<URL>)
+
+        The file lives OUTSIDE this repo so it cannot be committed by
+        accident. Re-run after saving.
+    """).strip() + "\n")
+    raise SystemExit(2)
 
 
 def _run_cli(date: str | None) -> Any:
@@ -179,6 +245,7 @@ def main() -> None:
     ap.add_argument("--raw-out", default=None)
     args = ap.parse_args()
 
+    ensure_auth()
     raw = _run_cli(args.date)
     if args.raw_out:
         Path(args.raw_out).write_text(json.dumps(raw, indent=2, ensure_ascii=False))

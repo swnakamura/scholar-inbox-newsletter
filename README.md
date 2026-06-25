@@ -3,24 +3,29 @@
 Turn the day's [Scholar Inbox](https://www.scholar-inbox.com) digest into a
 self-contained HTML newsletter:
 
-- One paper per article block, ranked by Scholar Inbox's relevance score.
-- A teaser figure (Scholar Inbox already extracts these; no PDF scraping).
-- Structured 5-section summary: **What / Why / How / Results / Thoughts** —
-  in English *and* Japanese.
+- One paper per article block, ranked by Scholar Inbox's relevance score,
+  shown as a colored badge (green / amber / grey by score).
+- Up to **two figures per paper**: the teaser plus, if there is one, the
+  architecture / pipeline figure (caption match — no PDF scraping).
+- Structured 5-section summary — **What / Why / How / Results / Thoughts**
+  — in English *and* Japanese. The Why section names representative prior
+  methods being criticized.
 - Direct links to paper, code, project page, arXiv.
 
-The pipeline is built as a [Claude Code](https://claude.com/claude-code) skill
-(`SKILL.md`) so you can run it interactively, but the scripts are plain Python
-and work standalone too.
+The pipeline is built as a [Claude Code](https://claude.com/claude-code)
+skill (`.claude/skills/scholar-inbox-digest/SKILL.md`), so the daily
+workflow is: `cd` into this directory, start `claude`, say **"今日のまとめを
+作って"** (or "today's digest"), done. The scripts are plain Python and
+also work standalone.
 
 ## How it works
 
 ```
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
 │  scholarinboxcli │───▶│  fetch_digest.py │───▶│   digest.json    │
-│   (your auth)    │    │  (normalize)     │    │  (raw + figures  │
-└──────────────────┘    └──────────────────┘    │   + 4-axis SI    │
-                                                │   summaries)     │
+│   + your saved   │    │  (auto-auth,     │    │  (raw + figures  │
+│   magic-link     │    │   normalize)     │    │   + 4-axis SI    │
+└──────────────────┘    └──────────────────┘    │   summaries)     │
                                                 └────────┬─────────┘
                                                          │
                                                          ▼
@@ -39,9 +44,8 @@ and work standalone too.
 ```
 
 Step 1 (fetch) and step 3 (render) are deterministic Python.
-Step 2 (the structured summaries) is where the model adds value:
-restructuring Scholar Inbox's four pre-generated summary axes
-(contributions / method / evaluation / problem) into the
+Step 2 is the model's job: restructure Scholar Inbox's four pre-generated
+summary axes (contributions / method / evaluation / problem) into the
 What / Why / How / Results / Thoughts schema, plus translation.
 
 ## Install
@@ -54,63 +58,70 @@ cd scholar-inbox-newsletter
 uv sync
 ```
 
-## Authenticate (one time)
+## One-time auth setup
 
-Get a magic-link URL from a Scholar Inbox email (or from the web UI), then:
+Save your Scholar Inbox magic-link URL to a known file, then `fetch_digest.py`
+auto-handles login (and re-login when cookies expire):
 
 ```bash
-uv run scholarinboxcli auth login --url "https://www.scholar-inbox.com/login?sha_key=...&date=MM-DD-YYYY"
-uv run scholarinboxcli auth status     # expect "is_logged_in": true
+mkdir -p ~/.config/scholar-inbox-newsletter
+# Open any Scholar Inbox digest email, copy the magic-link URL
+# (https://www.scholar-inbox.com/login?sha_key=...&date=...),
+# and paste it into this file as a single line, no quotes:
+$EDITOR ~/.config/scholar-inbox-newsletter/magic_link
 ```
 
-> ⚠️ **Do not commit your magic-link URL or the `sha_key` value anywhere in
-> the repo.** The `scholarinboxcli` config containing the cookie lives at
-> `~/.config/scholarinboxcli/config.json`, *outside* this repo, and stays
-> there. `raw.json`, `digest.json`, and `newsletter.html` are produced
-> locally and are git-ignored by default because they contain your user
-> name / read history — keep it that way.
+Alternative: export `SCHOLAR_INBOX_AUTH_URL=...` instead.
+
+> ⚠️ **Never commit the magic-link URL or its `sha_key`.** The auth file
+> lives outside this repo by design. `raw.json`, `digest.json`, and
+> `newsletter.html` are produced locally with your user name embedded and
+> are git-ignored — keep it that way.
 
 ## Daily run
 
 ```bash
-# 1. fetch and normalize
-uv run python scripts/fetch_digest.py --date 05-26-2026 --top 15 \
-    --raw-out raw.json --out digest.json
+# fetch (auto-authenticates on first use / cookie expiry)
+uv run python scripts/fetch_digest.py --top 15 --out digest.json --raw-out raw.json
 
-# 2. (open digest.json, add per-paper summary_struct / summary_struct_ja)
-#    See SKILL.md for the schema and writing guidance.
+# now write summary_struct / summary_struct_ja per paper in digest.json
+# (or just let Claude Code do it — see SKILL.md)
 
-# 3. render
+# render
 uv run python scripts/render_html.py digest.json --out newsletter.html
 open newsletter.html      # macOS
 ```
 
-If you don't want to write the structured summaries by hand, point Claude
-Code at `SKILL.md` — the skill instructs the model how to produce them from
-the four `summaries.*` axes already in `digest.json`.
-
-## What's in each file
-
-```
-SKILL.md             Claude Code skill: pipeline + writing guidance
-scripts/
-  fetch_digest.py    scholarinboxcli digest --json → normalized digest.json
-  render_html.py     digest.json → newsletter.html (Jinja2 template inline)
-pyproject.toml       uv project, deps: scholarinboxcli, jinja2
-.gitignore           excludes raw.json / digest.json / newsletter.html / .env
-```
+If you're using Claude Code in this directory, just say **"今日のまとめを
+作って"**. The skill follows all three steps automatically.
 
 ## Customization
 
 - **Number of papers**: `--top N` on `fetch_digest.py`.
-- **Picked figure** (per paper): set `picked_figure_idx` on a paper in
-  `digest.json` before rendering. Default is the lowest-numbered
-  `figureType="Figure"` (Tables skipped).
+- **Per-paper figures**: set `picked_figure_idxs: [int, ...]` on a paper in
+  `digest.json` before rendering. Default is teaser + first matching
+  architecture-keyword figure.
 - **Per-paper summary**: edit `summary_struct` / `summary_struct_ja` in
   `digest.json`. Sections can have any number of bullets; empty sections are
   collapsed in the output.
-- **Styling**: the HTML/CSS template is inline at the top of
-  `scripts/render_html.py`. Edit `TEMPLATE`.
+- **Styling**: the HTML/CSS template is in
+  [`templates/newsletter.html.j2`](templates/newsletter.html.j2). Edit
+  there — `render_html.py` does not inline a template.
+
+## What's in each file
+
+```
+.claude/skills/scholar-inbox-digest/
+  SKILL.md           Claude Code skill: pipeline + writing guidance
+templates/
+  newsletter.html.j2 Jinja2 template (full HTML + CSS for the newsletter)
+scripts/
+  fetch_digest.py    scholarinboxcli digest --json → normalized digest.json
+                     (calls ensure_auth() first to handle login)
+  render_html.py     digest.json → newsletter.html (loads template above)
+pyproject.toml       uv project, deps: scholarinboxcli, jinja2
+.gitignore           excludes raw.json / digest.json / newsletter.html / .env
+```
 
 ## Privacy
 
@@ -119,15 +130,16 @@ Inbox session cookie:
 
 | File | Contains | Safe to commit? |
 |---|---|---|
-| `~/.config/scholarinboxcli/config.json` | `sha_key`, cookies | **NO** — outside repo, stays there |
+| `~/.config/scholar-inbox-newsletter/magic_link` | `sha_key` in URL | **NO** — outside repo by design |
+| `~/.config/scholar-inbox-newsletter/config.json` (created by scholarinboxcli) | session cookie | **NO** — outside repo |
 | `raw.json` | user name, `read_paper_ids` | NO (gitignored) |
 | `digest.json` | user name, paper rankings for you | NO (gitignored) |
 | `newsletter.html` | your name in the header | NO (gitignored) |
-| `scripts/*.py`, `SKILL.md`, `pyproject.toml` | only code / docs | yes |
+| code, `SKILL.md`, `pyproject.toml`, `templates/*` | only code / docs | yes |
 
-If you need to share an example output publicly, manually scrub the
-`"user"` field from `digest.json` first and confirm there's nothing
-personal in `read_paper_ids` etc.
+If you need to share an example output publicly, scrub the `"user"` field
+from `digest.json` first and confirm nothing personal is in
+`read_paper_ids` etc.
 
 ## License
 
@@ -136,6 +148,6 @@ MIT.
 ## Credits
 
 - [Scholar Inbox](https://www.scholar-inbox.com) (Andreas Geiger lab,
-  Tübingen) for the paper recommendation service and the very rich API.
+  Tübingen) for the recommendation service and the very rich API.
 - [`scholarinboxcli`](https://github.com/mrshu/scholarinboxcli) for the
-  third-party Python CLI used to authenticate and fetch the daily digest.
+  third-party CLI used to authenticate and fetch the daily digest.
